@@ -1,261 +1,297 @@
-# 🐳 Writing Dockerfiles — Templates & Patterns
+# 🐳 Writing a Dockerfile
 
-> **Look at the template → know exactly what to write for any project**
+> Learn what each instruction does → use the template → build real projects.
 
 ---
 
-## ◈ THE ANATOMY OF A DOCKERFILE
+## ◈ WHAT IS A DOCKERFILE?
+
+A Dockerfile is a plain text file with instructions. Docker reads it top to bottom and builds your image step by step.
 
 ```
-Dockerfile instruction flow:
-─────────────────────────────────────────────────────
-
-FROM        ← What base OS/runtime to start from
-│
-├── ARG     ← Build-time variables (only during docker build)
-├── ENV     ← Runtime environment variables
-│
-├── WORKDIR ← Set working directory inside container
-│
-├── COPY / ADD  ← Bring files from host → container
-│
-├── RUN     ← Execute shell commands (installs, builds)
-│
-├── EXPOSE  ← Document which port the app uses
-│
-├── VOLUME  ← Declare mount points
-│
-└── CMD / ENTRYPOINT  ← What runs when container starts
+Dockerfile  →  docker build  →  IMAGE  →  docker run  →  CONTAINER
 ```
 
 ---
 
-## ◈ MASTER TEMPLATE
+# ━━━ BEGINNER — THE CORE INSTRUCTIONS ━━━━━━━━━━━━━━━━━━━━━━
+
+These 7 instructions cover 90% of what you'll write in any Dockerfile.
+
+---
+
+## FROM — Start With a Base
+
+Every Dockerfile must start with `FROM`. It picks the base OS or runtime.
 
 ```dockerfile
-# ════════════════════════════════════════════════════
-# STAGE 1 — BASE (shared setup)
-# ════════════════════════════════════════════════════
-FROM python:3.12-slim AS base
+FROM python:3.12-slim
+FROM node:20-alpine
+FROM ubuntu:22.04
+FROM nginx:alpine
+```
 
-# Build arguments (available only during build)
-ARG APP_ENV=production
-ARG VERSION=1.0.0
+You're not starting from scratch — you're building on top of something that already has Python, Node, etc. installed.
 
-# Environment variables (available at runtime)
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    APP_ENV=${APP_ENV}
+```
+slim    → smaller image, Debian-based, recommended for most apps
+alpine  → smallest possible, but some packages behave differently
+latest  → always pulls newest (avoid in prod — unpredictable)
+```
 
-# Set working directory — all following commands run from here
+---
+
+## WORKDIR — Set Your Working Directory
+
+Creates a folder and makes it the default location for everything that follows.
+
+```dockerfile
+WORKDIR /app
+```
+
+All `COPY`, `RUN`, `CMD` instructions after this run inside `/app`.  
+If the folder doesn't exist, Docker creates it automatically.
+
+---
+
+## COPY — Bring Files In
+
+```dockerfile
+COPY source destination
+
+COPY requirements.txt .        # Copy one file to WORKDIR
+COPY . .                       # Copy everything from your project
+COPY src/ /app/src/            # Copy a specific folder
+```
+
+The `.` on the right means "current WORKDIR" (which is `/app` if you set it).
+
+---
+
+## RUN — Execute Commands During Build
+
+```dockerfile
+RUN command
+
+RUN pip install -r requirements.txt
+RUN apt-get update && apt-get install -y curl
+RUN npm install
+```
+
+Every `RUN` creates a new **layer** in the image.  
+Chain commands with `&&` to keep it one layer:
+
+```dockerfile
+# ❌ 3 separate layers (bigger image)
+RUN apt-get update
+RUN apt-get install -y curl
+RUN apt-get clean
+
+# ✅ 1 layer (smaller image)
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+```
+
+---
+
+## ENV — Set Environment Variables
+
+```dockerfile
+ENV KEY=VALUE
+
+ENV PYTHONUNBUFFERED=1
+ENV NODE_ENV=production
+ENV PORT=8000
+```
+
+These variables are available **inside the container** when it runs.  
+Use them for config that shouldn't be hardcoded in your code.
+
+---
+
+## EXPOSE — Document the Port
+
+```dockerfile
+EXPOSE 8000
+EXPOSE 3000
+```
+
+This is **documentation only** — it doesn't actually open the port.  
+You still need `-p 8000:8000` when you `docker run`.  
+Think of it as a label saying "this app listens on port 8000."
+
+---
+
+## CMD — The Default Command
+
+```dockerfile
+CMD ["command", "arg1", "arg2"]
+
+CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+CMD ["node", "server.js"]
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+This runs when the container starts. Only **one CMD** per Dockerfile (last one wins).
+
+> Always use the JSON array format `["cmd", "arg"]` — not the string format.  
+> String format: `CMD python manage.py runserver` ← skip this in production.
+
+---
+
+# ━━━ BEGINNER — YOUR FIRST DOCKERFILE ━━━━━━━━━━━━━━━━━━━━━━
+
+```dockerfile
+# Simple Python app
+FROM python:3.12-slim
+
 WORKDIR /app
 
-# Install system dependencies (apt packages, etc.)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libpq-dev \
-    curl \
-    && rm -rf /var/lib/apt/lists/*    # ← Always clean up to reduce image size
-
-
-# ════════════════════════════════════════════════════
-# STAGE 2 — DEPENDENCIES (install packages)
-# ════════════════════════════════════════════════════
-FROM base AS deps
-
-# Copy ONLY dependency files first (Docker cache optimization)
-# If requirements.txt doesn't change → Docker reuses this layer
 COPY requirements.txt .
+RUN pip install -r requirements.txt
 
-RUN pip install --no-cache-dir -r requirements.txt
-
-
-# ════════════════════════════════════════════════════
-# STAGE 3 — FINAL IMAGE (production)
-# ════════════════════════════════════════════════════
-FROM deps AS production
-
-# Copy application code
 COPY . .
 
-# Create non-root user (security best practice)
-RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
-USER appuser
-
-# Document the port (doesn't actually publish — just metadata)
 EXPOSE 8000
 
-# Healthcheck — Docker will monitor this
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health/ || exit 1
-
-# Default command
-CMD ["gunicorn", "myproject.wsgi:application", "--bind", "0.0.0.0:8000"]
+CMD ["python", "app.py"]
 ```
+
+That's it. 7 lines. This pattern works for almost any simple app.
 
 ---
 
-## ◈ INSTRUCTION QUICK REFERENCE
+# ━━━ INTERMEDIATE — IMPORTANT PATTERNS ━━━━━━━━━━━━━━━━━━━━━
 
-### `FROM` — Base Image
+---
+
+## Layer Caching — Order Matters
+
+```
+Wrong order → slow builds every time:
+
+COPY . .                         ← any code change → invalidates everything below
+RUN pip install -r requirements.txt   ← reinstalls every time! ❌
+
+
+Right order → fast builds:
+
+COPY requirements.txt .          ← only re-runs if requirements change
+RUN pip install -r requirements.txt
+COPY . .                         ← code changes only affect this layer ✅
+```
+
+Rule: **copy dependency files first, install, then copy your code.**
+
+---
+
+## ARG — Build-Time Variables
 
 ```dockerfile
-FROM ubuntu:22.04            # Full Ubuntu OS
-FROM python:3.12-slim        # Python + minimal Debian (recommended)
-FROM python:3.12-alpine      # Python + Alpine Linux (smallest, but quirks)
-FROM node:20-alpine          # Node.js on Alpine
-FROM nginx:alpine            # Nginx web server
+ARG NODE_ENV=production
 
-# Multi-stage naming
-FROM python:3.12-slim AS builder
-FROM python:3.12-slim AS production
+docker build --build-arg NODE_ENV=development .
 ```
 
-### `RUN` — Execute Commands
+`ARG` is only available **during** `docker build`. Not at runtime.  
+`ENV` is available **at runtime** inside the container.
+
+---
+
+## ENTRYPOINT vs CMD
 
 ```dockerfile
-# Bad — creates unnecessary layers
-RUN apt-get update
-RUN apt-get install -y gcc
-RUN pip install django
-
-# ✅ Good — chain with && to keep it one layer
-RUN apt-get update && apt-get install -y \
-    gcc \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Python packages
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Node packages
-RUN npm ci --only=production
-```
-
-### `COPY` vs `ADD`
-
-```dockerfile
-COPY src/ /app/src/           # Copy files/dirs from host
-COPY . .                      # Copy everything (respect .dockerignore)
-
-ADD https://example.com/file.tar.gz /tmp/   # ADD can fetch URLs
-ADD archive.tar.gz /app/                    # ADD auto-extracts tar files
-# Use COPY unless you need ADD's special features
-```
-
-### `ENV` vs `ARG`
-
-```
-ARG  → Only during build     →  docker build --build-arg KEY=val
-ENV  → During build + runtime →  docker run -e KEY=val
-```
-
-```dockerfile
-ARG NODE_ENV=production           # only in build
-ENV DATABASE_URL=postgres://...   # persists in container
-
-# Can chain ARG → ENV
-ARG APP_VERSION
-ENV VERSION=${APP_VERSION}
-```
-
-### `CMD` vs `ENTRYPOINT`
-
-```
-ENTRYPOINT  →  The fixed executable, always runs
-CMD         →  Default arguments, can be overridden
-
-Together: ENTRYPOINT + CMD = full command
-Alone:    CMD = the whole command (easily overridden)
-```
-
-```dockerfile
-# CMD only (most common for apps)
+# CMD alone — full command, can be overridden
 CMD ["python", "manage.py", "runserver"]
 
-# ENTRYPOINT + CMD
+# ENTRYPOINT + CMD — ENTRYPOINT is fixed, CMD is the default arg
 ENTRYPOINT ["python", "manage.py"]
-CMD ["runserver"]                          # default: runserver
-# docker run myapp migrate                 # override: migrate
+CMD ["runserver"]
 
-# Shell form (avoid in prod — can't handle signals properly)
-CMD python manage.py runserver             # ❌ don't use
-CMD ["python", "manage.py", "runserver"]  # ✅ exec form
+# docker run myapp migrate   ← overrides CMD, keeps ENTRYPOINT
+# → runs: python manage.py migrate
 ```
 
-### `WORKDIR`, `EXPOSE`, `VOLUME`, `USER`
-
-```dockerfile
-WORKDIR /app                  # Create + cd into dir
-WORKDIR /app/src              # Can chain, relative to previous
-
-EXPOSE 8000                   # Documentation only, not published
-EXPOSE 8000/tcp               # TCP (default)
-EXPOSE 8000/udp
-
-VOLUME ["/app/media"]         # Declare mount point
-
-USER appuser                  # Switch to non-root user
-USER 1001                     # By UID
-```
+For most web apps, `CMD` alone is fine.  
+Use `ENTRYPOINT` when your container should always run as a specific tool.
 
 ---
 
-## ◈ .dockerignore — Always Include This
+## HEALTHCHECK
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD curl -f http://localhost:8000/health/ || exit 1
+```
+
+Docker checks this regularly. Container shows as `healthy`, `unhealthy`, or `starting`.
+
+---
+
+## USER — Don't Run as Root
+
+```dockerfile
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+USER appuser
+```
+
+Running as root inside a container is a security risk.  
+Always switch to a non-root user before `CMD`.
+
+---
+
+## .dockerignore — Keep Your Image Clean
+
+Create this file next to your Dockerfile. Docker won't copy anything listed here.
 
 ```
 # .dockerignore
 __pycache__/
 *.pyc
-*.pyo
 .env
 .env.*
 .git/
-.gitignore
 node_modules/
 *.log
 .DS_Store
 dist/
 build/
 coverage/
-.pytest_cache/
 *.sqlite3
 media/
 staticfiles/
-README.md
-docker-compose*.yml
-Dockerfile*
+```
+
+Without `.dockerignore`, Docker copies `node_modules`, `.git`, and all junk into the image. Always include it.
+
+---
+
+# ━━━ EXPERIENCED — MULTI-STAGE BUILDS ━━━━━━━━━━━━━━━━━━━━━━
+
+---
+
+## Why Multi-Stage?
+
+```
+Single-stage:                          Multi-stage:
+┌─────────────────────────┐            ┌────────────────────┐
+│ Python + gcc + node     │            │ Build Stage        │  ← discarded
+│ + all dev tools         │  900MB     │ (has all tools)    │
+│ + your app              │            └────────┬───────────┘
+└─────────────────────────┘                     │ copies only
+                                                │ what's needed
+                                       ┌────────▼───────────┐
+                                       │ Final Stage        │  ← shipped
+                                       │ python-slim + app  │  120MB
+                                       └────────────────────┘
 ```
 
 ---
 
-## ◈ MULTI-STAGE BUILD — WHY IT MATTERS
-
-```
-Without multi-stage:
-┌─────────────────────────────────────┐
-│  Python + gcc + node + build tools  │  ← 800MB+ image
-│  + all dev dependencies + app code  │
-└─────────────────────────────────────┘
-
-With multi-stage:
-┌──────────────────────────┐
-│  Build Stage (discarded) │  ← Has all build tools
-│  python + node + gcc     │
-└────────────┬─────────────┘
-             │  copies only built artifacts
-             ▼
-┌──────────────────────────┐
-│  Final Stage (shipped)   │  ← Only 120MB
-│  python-slim + your app  │
-└──────────────────────────┘
-```
+# ━━━ FULL EXAMPLE — Django + PostgreSQL + React ━━━━━━━━━━━━━
 
 ---
 
-## ◈ FULL EXAMPLE — Django + PostgreSQL + React
-
-### Project Structure
+## Project Structure
 
 ```
 myproject/
@@ -268,20 +304,17 @@ myproject/
 │   ├── package.json
 │   ├── src/
 │   └── Dockerfile
-├── nginx/
-│   ├── nginx.conf
-│   └── Dockerfile
 └── docker-compose.yml
 ```
 
 ---
 
-### `backend/Dockerfile`
+## backend/Dockerfile
 
 ```dockerfile
-# ════════════════════════════════════════
-# STAGE 1 — Python deps
-# ════════════════════════════════════════
+# ══════════════════════════════════════
+# STAGE 1 — Install dependencies
+# ══════════════════════════════════════
 FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -289,18 +322,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# System packages needed to compile Python deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Python packages into /install (separate from system)
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 
-# ════════════════════════════════════════
+# ══════════════════════════════════════
 # STAGE 2 — Production image
-# ════════════════════════════════════════
+# ══════════════════════════════════════
 FROM python:3.12-slim AS production
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -309,22 +344,22 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Only install runtime system libs (no gcc needed anymore)
+# Only runtime system lib (no gcc needed in final image)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy installed Python packages from builder
+# Copy installed Python packages from builder stage
 COPY --from=builder /install /usr/local
 
-# Copy app source
+# Copy app source code
 COPY . .
 
-# Create static/media directories
+# Create directories Django needs
 RUN mkdir -p /app/staticfiles /app/media
 
-# Security: non-root user
+# Non-root user for security
 RUN addgroup --system django && adduser --system --ingroup django django
 RUN chown -R django:django /app
 USER django
@@ -334,7 +369,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/health/ || exit 1
 
-# Use gunicorn in production
 CMD ["gunicorn", "myproject.wsgi:application", \
      "--bind", "0.0.0.0:8000", \
      "--workers", "4", \
@@ -344,7 +378,7 @@ CMD ["gunicorn", "myproject.wsgi:application", \
 
 ---
 
-### `backend/requirements.txt`
+## backend/requirements.txt
 
 ```
 django==5.0.4
@@ -353,59 +387,53 @@ psycopg2-binary==2.9.9
 gunicorn==22.0.0
 python-decouple==3.8
 django-cors-headers==4.3.1
+whitenoise==6.6.0
 celery==5.3.6
 redis==5.0.3
-whitenoise==6.6.0
 ```
 
 ---
 
-### `frontend/Dockerfile`
+## frontend/Dockerfile
 
 ```dockerfile
-# ════════════════════════════════════════
+# ══════════════════════════════════════
 # STAGE 1 — Build React app
-# ════════════════════════════════════════
+# ══════════════════════════════════════
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Install deps first (cache layer)
+# Install dependencies first (caching)
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Copy source and build
+# Build the production bundle
 COPY . .
-ARG VITE_API_URL=http://localhost:8000
+ARG VITE_API_URL=/api
 ENV VITE_API_URL=${VITE_API_URL}
 RUN npm run build
 
 
-# ════════════════════════════════════════
+# ══════════════════════════════════════
 # STAGE 2 — Serve with Nginx
-# ════════════════════════════════════════
+# ══════════════════════════════════════
 FROM nginx:alpine AS production
 
-# Remove default nginx config
 RUN rm /etc/nginx/conf.d/default.conf
-
-# Copy our nginx config
 COPY nginx.conf /etc/nginx/conf.d/
 
-# Copy built React files
+# Copy the built React files
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 EXPOSE 80
-
-HEALTHCHECK --interval=30s --timeout=10s \
-    CMD wget -qO- http://localhost/ || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]
 ```
 
 ---
 
-### `frontend/nginx.conf`
+## frontend/nginx.conf
 
 ```nginx
 server {
@@ -413,7 +441,7 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # React Router — serve index.html for all routes
+    # All routes → React Router
     location / {
         try_files $uri $uri/ /index.html;
     }
@@ -425,7 +453,6 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
     }
 
-    # Proxy static/media from Django
     location /static/ { proxy_pass http://backend:8000; }
     location /media/  { proxy_pass http://backend:8000; }
 }
@@ -433,49 +460,20 @@ server {
 
 ---
 
-### `nginx/Dockerfile` (Optional — main reverse proxy)
-
-```dockerfile
-FROM nginx:alpine
-COPY nginx.conf /etc/nginx/nginx.conf
-EXPOSE 80 443
-CMD ["nginx", "-g", "daemon off;"]
-```
-
----
-
-## ◈ LAYER CACHING STRATEGY
-
-```
-WRONG ORDER (slow builds):
-  COPY . .                  ← Any code change → ALL layers below re-run
-  RUN pip install -r req.txt
-
-✅ RIGHT ORDER (fast builds):
-  COPY requirements.txt .   ← Only re-runs if requirements.txt changes
-  RUN pip install -r req.txt
-  COPY . .                  ← Code changes only affect this + below
-```
-
----
-
 ## ◈ DOCKERFILE CHECKLIST
 
-```
-□ Using slim/alpine base image (not full ubuntu/python)
-□ Multi-stage build (separate builder and production)
-□ Dependency files copied before source code (cache optimization)
-□ --no-cache-dir on pip install
-□ rm -rf /var/lib/apt/lists/* after apt install
-□ Non-root USER set
-□ .dockerignore file created
-□ EXPOSE port declared
-□ HEALTHCHECK added
-□ CMD uses exec form (JSON array, not shell string)
-□ Secrets not hardcoded (use ENV or build args from outside)
-```
+Before you ship to production:
 
----
-
-> 💡 **Rule of thumb** — Every `RUN` is a layer. Fewer layers = smaller image.  
-> Chain commands with `&&` and clean up in the same `RUN`.
+```
+□  Using slim or alpine base image (not full ubuntu)
+□  Multi-stage build for compiled apps
+□  requirements.txt / package.json copied BEFORE source code
+□  --no-cache-dir on pip install
+□  rm -rf /var/lib/apt/lists/* after apt-get
+□  Non-root USER set before CMD
+□  .dockerignore file exists
+□  EXPOSE port declared
+□  HEALTHCHECK added
+□  CMD uses JSON array format (not shell string)
+□  No secrets hardcoded in the Dockerfile
+```
